@@ -166,13 +166,13 @@ EOF
 }
 
 # The MTU change may take a few minutes
-resource "time_sleep" "wait_5_minutes" {
+resource "time_sleep" "wait_2_minutes" {
   depends_on      = [null_resource.adjust_mtu]
-  create_duration = "5m"
+  create_duration = "2m"
 }
 
 resource "null_resource" "wait_on_mcp" {
-  depends_on = [time_sleep.wait_5_minutes]
+  depends_on = [time_sleep.wait_2_minutes]
   connection {
     type        = "ssh"
     user        = var.rhel_username
@@ -189,13 +189,55 @@ export HTTPS_PROXY="http://${var.vpc_support_server_ip}:3128"
 oc wait mcp/master --for condition=updated --timeout=30m || true
 oc wait mcp/worker --for condition=updated --timeout=30m || true
 
-echo "-diagnostics-'
+echo "-diagnostics-"
 oc get network cluster -o yaml | grep -i mtu
 oc get mcp
 
 echo '-checking mtu-'
 [[ "$( oc get network cluster -o yaml | grep clusterNetworkMTU | awk '{print $NF}')" == "9000" ]] || false
 echo "success on wait on mtu change"
+EOF
+    ]
+  }
+}
+
+resource "null_resource" "keep_dns_on_vpc" {
+  depends_on = [null_resource.wait_on_mcp]
+  connection {
+    type        = "ssh"
+    user        = var.rhel_username
+    host        = var.bastion_public_ip
+    private_key = file(var.private_key_file)
+    agent       = var.ssh_agent
+    timeout     = "${var.connection_timeout}m"
+  }
+
+  # Dev Note: put the dns nodes on the VPC machines
+  provisioner "remote-exec" {
+    inline = [<<EOF
+export HTTPS_PROXY="http://${var.vpc_support_server_ip}:3128"
+oc patch dns.operator/default -p '{ "spec" : {"nodePlacement": {"nodeSelector": {"kubernetes.io/arch" : "amd64"}}}}' --type merge
+EOF
+    ]
+  }
+}
+
+resource "null_resource" "keep_imagepruner_on_vpc" {
+  depends_on = [null_resource.keep_dns_on_vpc]
+  connection {
+    type        = "ssh"
+    user        = var.rhel_username
+    host        = var.bastion_public_ip
+    private_key = file(var.private_key_file)
+    agent       = var.ssh_agent
+    timeout     = "${var.connection_timeout}m"
+  }
+
+  # Dev Note: put the image pruner nodes on the VPC machines
+  provisioner "remote-exec" {
+    inline = [<<EOF
+export HTTPS_PROXY="http://${var.vpc_support_server_ip}:3128"
+oc patch imagepruner/cluster -p '{ "spec" : {"nodeSelector": {"kubernetes.io/arch" : "amd64"}}}' --type merge
 EOF
     ]
   }
