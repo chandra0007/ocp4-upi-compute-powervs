@@ -25,9 +25,15 @@ resource "ibm_pi_instance" "bastion" {
   }
 }
 
+# The PowerVS instance may take a few minutes to start (per the IPI work)
+resource "time_sleep" "wait_3_minutes" {
+  depends_on      = [ibm_pi_instance.bastion]
+  create_duration = "3m"
+}
+
 data "ibm_pi_instance_ip" "bastion_public_ip" {
   count      = 1
-  depends_on = [ibm_pi_instance.bastion]
+  depends_on = [time_sleep.wait_3_minutes]
 
   pi_instance_name     = ibm_pi_instance.bastion[count.index].pi_instance_name
   pi_network_name      = var.bastion_public_network_name
@@ -168,11 +174,13 @@ resource "null_resource" "enable_repos" {
     timeout     = "${var.connection_timeout}m"
   }
 
+  # The timeout is a guard against flakes in the dns lookup for mirrolist.centos.org and dl.fedoraproject.org
   provisioner "remote-exec" {
     inline = [<<EOF
 # Additional repo for installing ansible package
 if ( [[ -z "${var.rhel_subscription_username}" ]] || [[ "${var.rhel_subscription_username}" == "<subscription-id>" ]] ) && [[ -z "${var.rhel_subscription_org}" ]]
 then
+  timeout 300 bash -c -- 'until nslookup mirrorlist.centos.org; do sleep 30; printf ".";done'
   sudo yum install -y epel-release
 else
   os_ver=$(cat /etc/os-release | egrep "^VERSION_ID=" | awk -F'"' '{print $2}')
@@ -183,6 +191,7 @@ else
       sudo subscription-manager repos --enable ${var.ansible_repo_name}
     fi
   else
+    timeout 300 bash -c -- 'until nslookup dl.fedoraproject.org; do sleep 30; printf ".";done'
     sudo yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
   fi
 fi
@@ -204,9 +213,14 @@ resource "null_resource" "manage_packages" {
     timeout     = "${var.connection_timeout}m"
   }
 
+  # Dev Note: transient connection errors to centos may occur, and the || provides resilient reruns of the command
   provisioner "remote-exec" {
     inline = [
-      "sudo yum install -y wget jq git net-tools vim python3 tar"
+      <<EOF
+sudo yum install -y wget jq git net-tools vim python3 tar \
+  || sleep 60s \
+  && sudo yum install -y wget jq git net-tools vim python3 tar
+EOF
     ]
   }
   provisioner "remote-exec" {

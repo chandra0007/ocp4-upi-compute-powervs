@@ -24,11 +24,28 @@
 # - Command: ibmcloud
 # - Command: yq
 # - Command: jq
+EXPECTED_NODES=$2
+if [ -z "${EXPECTED_NODES}" ]
+then
+    EXPECTED_NODES=1
+fi
 
-# installs supporting files
-setup_files () {
-    ibmcloud plugin install power-iaas is -f
-}
+IBMCLOUD=ibmcloud
+if [[ $(type -t ic) == function ]]
+then
+    IBMCLOUD=ic
+else 
+    ${IBMCLOUD} plugin install power-iaas -f
+fi
+
+if [ ! -z "${1}" ]
+then
+    IBMCLOUD_HOME_FOLDER="${1}"
+    function ic() {
+    HOME=${IBMCLOUD_HOME_FOLDER} ibmcloud "$@"
+    }
+    IBMCLOUD=ic
+fi
 
 # format file var.tfvars
 create_var_file () {
@@ -55,7 +72,7 @@ else
     VPC_ZONE=$(yq -r '.controlPlane.platform.ibmcloud.zones[0]' ${INSTALL_CONFIG_FILE})
 
     VPC_NAME_PREFIX=$(yq -r '.metadata.name' ${INSTALL_CONFIG_FILE})
-    VPC_NAME=$(ibmcloud is vpcs --output json | jq -r '.[] | select(.name | contains("'${VPC_NAME_PREFIX}'")).name')
+    VPC_NAME=$(${IBMCLOUD} is vpcs --output json | jq -r '.[] | select(.name | contains("'${VPC_NAME_PREFIX}'")).name')
 fi
 
 if [ -z "${POWERVS_SERVICE_INSTANCE_ID}" ]
@@ -68,9 +85,9 @@ else
     # To get the CRN...
     # POWERVS_CRN=$(ibmcloud resource service-instances --output json | jq -r '.[] | select(.guid == "'${POWERVS_SERVICE_INSTANCE_ID}'").id')
     # ibmcloud pi st "${POWERVS_CRN}"
-    POWERVS_ZONE=$(ibmcloud resource service-instances --output json | jq -r '.[] | select(.guid == "'${POWERVS_SERVICE_INSTANCE_ID}'").region_id')
+    POWERVS_ZONE=$(${IBMCLOUD} resource service-instances --output json | jq -r '.[] | select(.guid == "'${POWERVS_SERVICE_INSTANCE_ID}'").region_id')
     POWERVS_REGION=$(
-        case "$status" in
+        case "$POWERVS_ZONE" in
             ("dal12") echo "dal" ;;
             ("us-south") echo "us-south" ;;
             ("wdc06") echo "wdc" ;;
@@ -86,8 +103,10 @@ else
             ("syd05") echo "syd" ;;
             ("tok04") echo "tok" ;;
             ("osa21") echo "osa" ;;
-            (*) echo "$status" ;;
+            (*) echo "$POWERVS_ZONE" ;;
         esac)
+    echo "REGION: ${POWERVS_REGION}"
+    echo "ZONE: ${POWERVS_ZONE}"
 fi
 
 # OpenShift URL
@@ -128,7 +147,7 @@ COREOS_NAME=$(echo ${COREOS_FILE} | sed 's|\.ova\.gz||' | tr '.' '-' | sed 's|-0
 # RHEL_IMAGE_NAME
 if [ -z "${RHEL_IMAGE_NAME}" ]
 then
-    echo "WARNING: RHEL_IMAGE_NAME is not set"
+    echo "WARNING: RHEL_IMAGE_NAME is not set, defaulting to 'CentOS-Stream-8'"
     RHEL_IMAGE_NAME="CentOS-Stream-8"
 fi
 
@@ -154,16 +173,16 @@ private_key_file = "data/id_rsa"
 
 # Example file name: rhcos-414-92-202307050443-0-ppc64le-powervs.ova.gz
 rhcos_import_image                 = true
-rhcos_import_image_filename        = "${COREOS_FILE}"
+rhcos_import_image_filename        = "${COREOS_NAME}-0-ppc64le-powervs.ova.gz"
 rhcos_import_image_region_override = "us-east"
 
 processor_type = "shared"
 system_type    = "e980"
 bastion_health_status = "WARNING"
 bastion               = { memory = "16", processors = "1", "count" = 1 }
-worker                = { memory = "16", processors = "1", "count" = 1 }
+worker                = { memory = "16", processors = "1", "count" = ${EXPECTED_NODES} }
+override_region_check=true
 EOFXEOF
 }
 
-setup_files
 create_var_file
